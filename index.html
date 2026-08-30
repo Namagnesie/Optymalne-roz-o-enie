@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Optymalny rozkład użytków</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#111827">
+<style>
+:root{
+  --bg:#f4f4f5; --card:#fff; --text:#18181b; --muted:#71717a; --line:#d4d4d8;
+  --accent:#111827; --good:#166534;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text)}
+.wrap{max-width:980px;margin:auto;padding:16px}
+h1{font-size:24px;margin:4px 0 6px}
+.sub{color:var(--muted);margin-bottom:16px;font-size:14px}
+.card{background:var(--card);border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 1px 4px #0001}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+label{display:block;font-size:13px;font-weight:650;margin-bottom:5px}
+input{width:100%;font-size:18px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fff}
+.check{display:flex;align-items:center;gap:9px;margin-top:12px}
+.check input{width:20px;height:20px}
+button{width:100%;border:0;border-radius:12px;background:var(--accent);color:white;font-size:18px;font-weight:750;padding:14px;margin-top:14px}
+.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.stat{background:#fafafa;border:1px solid #eee;border-radius:12px;padding:12px}
+.stat b{display:block;font-size:22px;margin-top:3px}
+.good{color:var(--good)}
+canvas{width:100%;height:auto;border:1px solid var(--line);border-radius:10px;background:#fff}
+.small{font-size:12px;color:var(--muted);margin-top:8px}
+@media(min-width:760px){.grid{grid-template-columns:repeat(4,1fr)}.stats{grid-template-columns:repeat(4,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Optymalny rozkład użytków</h1>
+  <div class="sub">Arkusz / płyta → prostokąt lub kwadrat. Program sprawdza orientację pionową, poziomą i układy mieszane.</div>
+
+  <div class="card">
+    <div class="grid">
+      <div><label>Arkusz — szerokość [mm]</label><input id="sheetW" type="number" value="500" min="1" step="1"></div>
+      <div><label>Arkusz — wysokość [mm]</label><input id="sheetH" type="number" value="350" min="1" step="1"></div>
+      <div><label>Użytek — szerokość [mm]</label><input id="itemW" type="number" value="90" min="1" step="1"></div>
+      <div><label>Użytek — wysokość [mm]</label><input id="itemH" type="number" value="60" min="1" step="1"></div>
+      <div><label>Odstęp między użytkami [mm]</label><input id="gap" type="number" value="0" min="0" step="0.1"></div>
+      <div><label>Margines arkusza [mm]</label><input id="margin" type="number" value="0" min="0" step="0.1"></div>
+      <div><label>Potrzebna liczba sztuk</label><input id="needed" type="number" value="0" min="0" step="1"></div>
+    </div>
+    <div class="check">
+      <input id="rotate" type="checkbox" checked>
+      <label for="rotate" style="margin:0">Pozwól obracać użytki o 90°</label>
+    </div>
+    <button onclick="optimize()">Oblicz najlepszy układ</button>
+  </div>
+
+  <div class="card">
+    <div class="stats">
+      <div class="stat">Sztuk z arkusza<b id="count">—</b></div>
+      <div class="stat">Wykorzystanie<b id="usage" class="good">—</b></div>
+      <div class="stat">Odpad<b id="waste">—</b></div>
+      <div class="stat">Liczba arkuszy<b id="sheets">—</b></div>
+    </div>
+    <div class="small" id="desc"></div>
+  </div>
+
+  <div class="card">
+    <canvas id="cv" width="900" height="620"></canvas>
+    <div class="small">Podgląd ma charakter technologiczny. Szare pole to arkusz, prostokąty to użytki.</div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function fitCount(L, s, gap){
+  if(s<=0 || L<=0) return 0;
+  return Math.max(0, Math.floor((L + gap + 1e-9)/(s + gap)));
+}
+
+function rectsInRegion(x,y,W,H,w,h,gap,rot=false){
+  const cols=fitCount(W,w,gap), rows=fitCount(H,h,gap);
+  const arr=[];
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    arr.push({x:x+c*(w+gap), y:y+r*(h+gap), w,h,rot});
+  }
+  return arr;
+}
+
+function candidateUniform(W,H,w,h,gap,allowRotate){
+  let best={rects:rectsInRegion(0,0,W,H,w,h,gap,false), name:"Wszystkie w orientacji podstawowej"};
+  if(allowRotate && w!==h){
+    const r=rectsInRegion(0,0,W,H,h,w,gap,true);
+    if(r.length>best.rects.length) best={rects:r,name:"Wszystkie obrócone o 90°"};
+  }
+  return best;
+}
+
+// Układy pasowe: pionowe lub poziome strefy, każda strefa może mieć inną orientację.
+// To praktyczny, szybki algorytm dla typowych formatów poligraficznych.
+function stripeCandidates(W,H,w,h,gap,allowRotate){
+  let cands=[candidateUniform(W,H,w,h,gap,allowRotate)];
+  if(!allowRotate || w===h) return cands;
+
+  // Podział pionowy w każdym możliwym miejscu wynikającym z siatki.
+  const stepsX = new Set([0,W]);
+  for(const sw of [w,h]){
+    for(let n=1;;n++){
+      let x=n*sw+(n-1)*gap;
+      if(x>=W) break;
+      stepsX.add(x);
+    }
+  }
+  for(const split of stepsX){
+    if(split<=0 || split>=W) continue;
+    for(const leftRot of [false,true]) for(const rightRot of [false,true]){
+      const a=leftRot?[h,w]:[w,h], b=rightRot?[h,w]:[w,h];
+      let R1=rectsInRegion(0,0,split,H,a[0],a[1],gap,leftRot);
+      let x2=split + gap;
+      if(x2>W) continue;
+      let R2=rectsInRegion(x2,0,W-x2,H,b[0],b[1],gap,rightRot);
+      cands.push({rects:R1.concat(R2),name:"Układ mieszany — podział pionowy"});
+    }
+  }
+
+  // Podział poziomy.
+  const stepsY = new Set([0,H]);
+  for(const sh of [h,w]){
+    for(let n=1;;n++){
+      let y=n*sh+(n-1)*gap;
+      if(y>=H) break;
+      stepsY.add(y);
+    }
+  }
+  for(const split of stepsY){
+    if(split<=0 || split>=H) continue;
+    for(const topRot of [false,true]) for(const bottomRot of [false,true]){
+      const a=topRot?[h,w]:[w,h], b=bottomRot?[h,w]:[w,h];
+      let R1=rectsInRegion(0,0,W,split,a[0],a[1],gap,topRot);
+      let y2=split + gap;
+      if(y2>H) continue;
+      let R2=rectsInRegion(0,y2,W,H-y2,b[0],b[1],gap,bottomRot);
+      cands.push({rects:R1.concat(R2),name:"Układ mieszany — podział poziomy"});
+    }
+  }
+  return cands;
+}
+
+function optimize(){
+  const SW=+ $('sheetW').value, SH=+ $('sheetH').value;
+  const w=+ $('itemW').value, h=+ $('itemH').value;
+  const gap=+ $('gap').value, m=+ $('margin').value;
+  const needed=+ $('needed').value, allow=$('rotate').checked;
+
+  if([SW,SH,w,h].some(v=>!isFinite(v)||v<=0) || gap<0 || m<0){
+    alert("Sprawdź wymiary."); return;
+  }
+  const W=SW-2*m, H=SH-2*m;
+  if(W<=0||H<=0){ alert("Margines jest za duży."); return; }
+
+  let cands=stripeCandidates(W,H,w,h,gap,allow);
+  cands.sort((a,b)=>b.rects.length-a.rects.length);
+  let best=cands[0];
+  best.rects=best.rects.map(r=>({...r,x:r.x+m,y:r.y+m}));
+
+  const n=best.rects.length;
+  const itemArea=w*h, usableArea=SW*SH;
+  const usage=n*itemArea/usableArea*100;
+  $('count').textContent=n;
+  $('usage').textContent=usage.toFixed(1)+"%";
+  $('waste').textContent=(100-usage).toFixed(1)+"%";
+  $('sheets').textContent=needed>0 && n>0 ? Math.ceil(needed/n) : "—";
+  $('desc').textContent = n ? `${best.name}. Format arkusza: ${SW} × ${SH} mm, użytek: ${w} × ${h} mm.` : "Użytek nie mieści się na arkuszu.";
+
+  draw(SW,SH,best.rects,m);
+}
+
+function draw(SW,SH,rects,m){
+  const cv=$('cv'), ctx=cv.getContext('2d');
+  ctx.clearRect(0,0,cv.width,cv.height);
+  const pad=45, scale=Math.min((cv.width-2*pad)/SW,(cv.height-2*pad)/SH);
+  const ox=(cv.width-SW*scale)/2, oy=(cv.height-SH*scale)/2;
+
+  ctx.fillStyle="#e4e4e7";
+  ctx.fillRect(ox,oy,SW*scale,SH*scale);
+  ctx.strokeStyle="#18181b"; ctx.lineWidth=2;
+  ctx.strokeRect(ox,oy,SW*scale,SH*scale);
+
+  if(m>0){
+    ctx.strokeStyle="#a1a1aa"; ctx.setLineDash([7,5]);
+    ctx.strokeRect(ox+m*scale,oy+m*scale,(SW-2*m)*scale,(SH-2*m)*scale);
+    ctx.setLineDash([]);
+  }
+
+  rects.forEach((r,i)=>{
+    ctx.fillStyle = r.rot ? "#dbeafe" : "#dcfce7";
+    ctx.strokeStyle="#3f3f46"; ctx.lineWidth=1;
+    ctx.fillRect(ox+r.x*scale,oy+r.y*scale,r.w*scale,r.h*scale);
+    ctx.strokeRect(ox+r.x*scale,oy+r.y*scale,r.w*scale,r.h*scale);
+    if(r.w*scale>32 && r.h*scale>20){
+      ctx.fillStyle="#27272a"; ctx.font="11px system-ui"; ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillText(i+1,ox+(r.x+r.w/2)*scale,oy+(r.y+r.h/2)*scale);
+    }
+  });
+}
+optimize();
+</script>
+<script>
+if ('serviceWorker' in navigator) { window.addEventListener('load',()=>navigator.serviceWorker.register('service-worker.js')); }
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "Optymalny rozkład użytków",
+  "short_name": "Rozkład",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f4f5",
+  "theme_color": "#111827",
+  "description": "Kalkulator optymalnego rozmieszczenia prostokątnych użytków na arkuszu lub płycie."
+}
